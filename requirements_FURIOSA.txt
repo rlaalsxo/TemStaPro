@@ -1,0 +1,7 @@
+torch
+numpy
+pandas
+matplotlib
+sentencepiece
+transformers
+furiosa-sdk
