@@ -107,6 +107,14 @@ parser.add_option("--version", "-v", dest="version",
 	default=False, action="store_true",
 	help="print version of the program and exit.")
 
+parser.add_option("--provider", dest="provider",
+	default="pytorch",
+	help="inference provider: 'pytorch' (default) or 'furiosa' (FuriosaAI NPU).")
+
+parser.add_option("--onnx-model", dest="onnx_model",
+	default=None, help="path to the ONNX model file "+\
+	"(required when --provider is 'furiosa').")
+
 (options, args) = parser.parse_args()
 
 if(options.version):
@@ -123,13 +131,25 @@ except AssertionError as message:
 	print(message, file=sys.stderr)
 	exit()
 
-try:
-	assert (options.pt_dir != None), (
-		f"{sys.argv[0]}: a path to the ProtTrans model location is required."
-	)
-except AssertionError as message:
-	print(message, file=sys.stderr)
-	exit()
+if options.provider == "pytorch":
+	try:
+		assert (options.pt_dir != None), (
+			f"{sys.argv[0]}: a path to the ProtTrans model location is required."
+		)
+	except AssertionError as message:
+		print(message, file=sys.stderr)
+		exit()
+
+if options.provider == "furiosa":
+	try:
+		assert (options.onnx_model != None), (
+			f"{sys.argv[0]}: --onnx-model is required when --provider is 'furiosa'."
+		)
+	except AssertionError as message:
+		print(message, file=sys.stderr)
+		exit()
+	if options.pt_dir is None:
+		options.pt_dir = os.path.dirname(os.path.abspath(options.onnx_model))
 
 PARAMETERS["CLASSIFIERS_DIR"] = f"{options.tsp_dir}/models"
 
@@ -145,11 +165,17 @@ import results
 # Standardization of the FASTA file
 (sequences, orig_headers, orig_seqs) = prottrans_models.process_FASTA(options.fasta)
 
-# Loading the ProtTrans model
+# Loading the model
 print("%s: beginning to load the model " % datetime.now(), file=sys.stderr)
 
-pt_model, tokenizer = prottrans_models.load_model_and_tokenizer(options.pt_dir, 
-	PARAMETERS["PT_MODEL_PATH"])
+if options.provider == "pytorch":
+	pt_model, tokenizer = prottrans_models.load_model_and_tokenizer(options.pt_dir,
+		PARAMETERS["PT_MODEL_PATH"])
+elif options.provider == "furiosa":
+	import furiosa_backend
+	tokenizer = prottrans_models.get_tokenizer(options.pt_dir)
+	furiosa_runner = furiosa_backend.FuriosaT5Runner(options.onnx_model)
+	PARAMETERS["DEVICE"] = torch.device("cpu")
 
 print("%s: finished loading the model" % datetime.now(), file=sys.stderr)
 
@@ -182,10 +208,16 @@ for i in range(0, len(list(sequences.keys())), options.portion_size):
 		print(f"{datetime.now()}: beginning to generate embeddings", file=sys.stderr)
 
 		# Generating embeddings
-		embeddings = prottrans_models.get_embeddings(pt_model, tokenizer, 
-			seqs_wo_emb_portion, 
-			per_residue=per_res_mode, 
-			per_protein=True)
+		if options.provider == "pytorch":
+			embeddings = prottrans_models.get_embeddings(pt_model, tokenizer,
+				seqs_wo_emb_portion,
+				per_residue=per_res_mode,
+				per_protein=True)
+		elif options.provider == "furiosa":
+			embeddings = furiosa_backend.get_embeddings(furiosa_runner, tokenizer,
+				seqs_wo_emb_portion,
+				per_residue=per_res_mode,
+				per_protein=True)
 
 		gen_emb_end = datetime.now()
 		
